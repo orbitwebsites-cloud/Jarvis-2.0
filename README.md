@@ -112,7 +112,7 @@ Closing the window just hides it. Open it again from the Jarvis icon in the menu
 
 Ask for something that needs looking and clicking, such as "play the latest MrBeast video" or "turn on dark mode in System Settings", and Jarvis takes over the mouse and keyboard. It takes a screenshot, decides what to do, does it, and looks again, until the task is done. An orange ring shows where it's about to click. Press **Esc** at any time to stop it.
 
-Jarvis won't buy anything, send messages, post, delete things or type passwords unless you asked for exactly that; it stops and tells you instead. Its own notch panel and pointer are hidden from its screenshots.
+Jarvis sends messages, posts, deletes things and accepts terms when that's clearly part of what you asked. Payments are the exception: it never completes a purchase, checkout, subscription or money transfer unless you explicitly told it to pay. If a task reaches a payment step you didn't approve, it stops before confirming and tells you what it would buy and the total. Its own notch panel and pointer are hidden from its screenshots.
 
 How well this works depends on the model. Claude is built for it and is the most reliable. Open models on NVIDIA or Ollama can do it too, with a coordinate grid drawn on their screenshots to help them aim, but they miss more often. Screen control uses the vision model (`JARVIS_VISION_MODEL`), which has to support both images and tool calling.
 
