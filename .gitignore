@@ -12,3 +12,9 @@ android/build/
 android/app/build/
 android/local.properties
 android/.idea/
+
+# Local run/build leftovers
+jarvis.log
+build.log
+jarvis-windows.png
+RECOVERY.md

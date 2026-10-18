@@ -224,13 +224,20 @@
 <script>
 (() => {
   // ---- bridge to Python -----------------------------------------------------
-  // The Mac app listens through WebKit; the Android app injects JarvisAndroid.
+  // The Mac app listens through WebKit; the Android app injects JarvisAndroid;
+  // the Windows app exposes window.pywebview.api once "pywebviewready" fires.
+  const queued = [];
   const post = (msg) => {
     try {
       if (window.JarvisAndroid) window.JarvisAndroid.post(JSON.stringify(msg));
-      else window.webkit.messageHandlers.jarvis.postMessage(JSON.stringify(msg));
+      else if (window.webkit && window.webkit.messageHandlers) window.webkit.messageHandlers.jarvis.postMessage(JSON.stringify(msg));
+      else if (window.pywebview && window.pywebview.api && window.pywebview.api.post) window.pywebview.api.post(JSON.stringify(msg));
+      else queued.push(msg);
     } catch (e) {}
   };
+  window.addEventListener("pywebviewready", () => {
+    while (queued.length) post(queued.shift());
+  });
 
   const $ = (id) => document.getElementById(id);
   const feed = $("feed"), statusEl = $("status");

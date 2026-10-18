@@ -221,6 +221,20 @@ python -m jarvis
 
 The first time you use a hotkey, Whisper downloads its speech model (about 150 MB for `base.en`), so the first transcription is slow.
 
+### Windows app
+
+On Windows, Jarvis opens the same window as the Mac app (the orb, a feed of what it heard and did, and settings) and puts an icon in the system tray. Closing the window keeps Jarvis running; right-click the tray icon to quit. It needs `pywebview` and `pystray` (`pip install pywebview pystray`) and the Edge WebView2 runtime, which Windows 10 and 11 already have.
+
+To build `Jarvis.exe`:
+
+```bash
+pip install pyinstaller pywebview pystray
+cd packaging
+pyinstaller --noconfirm Jarvis-windows.spec
+```
+
+The app is in `packaging\dist\Jarvis\Jarvis.exe`. It reads its settings from `%USERPROFILE%\.jarvis\.env` and logs to `%USERPROFILE%\.jarvis\jarvis.log`; the first launch without a key shows the setup screen.
+
 ### Mac permissions
 
 macOS will block the hotkeys, typing and screenshots until you allow them. In System Settings → Privacy & Security, give your terminal app (Terminal, iTerm, or VS Code) access under **Microphone**, **Accessibility**, **Input Monitoring** and **Screen Recording**, then restart the terminal.

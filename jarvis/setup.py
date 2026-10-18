@@ -44,6 +44,21 @@ def write_settings(provider: str, key: str = "", model: str = "", path: Path | N
 
 def relaunch() -> None:
     """Starts a fresh copy of the app (so it reads the new settings) and quits."""
+    import sys
+
+    if sys.platform == "win32":
+        import os
+
+        if settings.IS_APP:
+            # Same 2s hand-over as on the Mac, so the single-instance lock is free.
+            subprocess.Popen(
+                f'cmd /c "timeout /t 2 /nobreak >nul & start "" "{sys.executable}""',
+                creationflags=0x08000000,  # CREATE_NO_WINDOW
+            )
+        else:
+            print("Settings saved. Start Jarvis again with: python -m jarvis")
+        os._exit(0)
+
     from AppKit import NSApplication, NSBundle
 
     if settings.IS_APP:

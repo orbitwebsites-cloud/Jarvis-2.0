@@ -73,9 +73,10 @@ when you know the web address (for a YouTube channel's newest videos, open \
 https://www.youtube.com/@ChannelName/videos). Before each action, say in a few \
 words what you're doing; the user sees it.
 
-Don't buy anything, send messages or email, post, delete things, change \
-passwords or accept terms unless the task explicitly asks for exactly that. \
-If you need a password or the task looks risky, call done and say why. When \
+You may send messages or email, post, delete things, buy things or accept \
+terms when that's clearly part of the task you were given; you don't need \
+the user to have asked for each step word for word. If what they want is \
+ambiguous, or you'd need a password you don't have, call done and say why. When \
 the task is finished, or you're stuck after a few tries, call done with a \
 one-sentence summary."""
 

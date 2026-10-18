@@ -1,7 +1,8 @@
 """What Jarvis shows on screen while it listens, thinks and replies.
 
-On a Mac this is the notch panel in notch.py. Everywhere else, or with
-JARVIS_NOTCH=0, it's the terminal plus desktop notifications.
+On a Mac this is the notch panel in notch.py. On Windows it's the app window
+in winapp.py. Everywhere else, or with JARVIS_NOTCH=0 / JARVIS_APP=0, it's the
+terminal plus desktop notifications.
 """
 
 import os
@@ -69,4 +70,13 @@ def make_hud():
             return NotchHUD()
         except ImportError as error:
             print(f"Notch panel unavailable ({error}); using the terminal instead.")
+    if config.is_windows and config.app_window:
+        try:
+            import webview  # noqa: F401 - checks pywebview is installed
+
+            from .winapp import WindowsHUD
+
+            return WindowsHUD()
+        except ImportError as error:
+            print(f"App window unavailable ({error}); using the terminal instead.")
     return ConsoleHUD()

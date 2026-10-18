@@ -40,6 +40,8 @@ def acquire_single_instance(wait_seconds: float = 3.0) -> bool:
     over as the old copy exits, while a genuine second launch still fails.
     """
     global _instance_lock
+    if config.is_windows:
+        return _acquire_windows_mutex(wait_seconds)
     try:
         import fcntl
 
@@ -61,6 +63,47 @@ def acquire_single_instance(wait_seconds: float = 3.0) -> bool:
                 lock_file.close()
                 return False
             time.sleep(0.25)
+
+
+class _WindowsMutex:
+    """A named mutex, closed like the lock file is elsewhere."""
+
+    def __init__(self, kernel32, handle):
+        self._kernel32, self._handle = kernel32, handle
+
+    def close(self) -> None:
+        if self._handle:
+            self._kernel32.CloseHandle(self._handle)
+            self._handle = None
+
+
+def _acquire_windows_mutex(wait_seconds: float) -> bool:
+    """Windows has no fcntl, so a named mutex (one per data dir) marks the
+    running copy. The OS closes it when the process exits."""
+    global _instance_lock
+    try:
+        import ctypes
+        import hashlib
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        config.data_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        # A read-only home or similar: don't block startup.
+        return True
+    digest = hashlib.sha1(str(config.data_dir.resolve()).lower().encode()).hexdigest()[:12]
+    name = f"Local\\JarvisSingleInstance-{digest}"
+    ERROR_ALREADY_EXISTS = 183
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        handle = kernel32.CreateMutexW(None, False, name)
+        if handle and ctypes.get_last_error() != ERROR_ALREADY_EXISTS:
+            _instance_lock = _WindowsMutex(kernel32, handle)
+            return True
+        if handle:
+            kernel32.CloseHandle(handle)
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.25)
 
 
 class Jarvis:
@@ -318,6 +361,11 @@ def main() -> None:
         # setup screen instead (missing or wrong key, unknown provider, ...).
         if config.is_mac and settings.IS_APP:
             from .setup import run_setup_window
+
+            run_setup_window(str(problem))
+            return
+        if config.is_windows and settings.IS_APP:
+            from .winapp import run_setup_window
 
             run_setup_window(str(problem))
             return
