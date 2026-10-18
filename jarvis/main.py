@@ -120,6 +120,7 @@ class Jarvis:
         self.hud = make_hud()
         self.hud.set_level_source(lambda: self.recorder.level)
         self.brain.attach(self.hud)
+        self.brain.announce = self.announce_plan
         if config.app_window:
             self.hud.attach_app(
                 {
@@ -148,6 +149,23 @@ class Jarvis:
 
     def _current(self, job: int) -> bool:
         return job == self._job
+
+    def announce_plan(self, steps: list[str]) -> None:
+        """Reads the AI's plan out before it acts. Pressing the hotkey or Esc
+        while it's talking cancels the task before anything is done."""
+        if not steps:
+            return
+        log("Plan: " + " / ".join(steps))
+        if not prefs.get("speak_replies"):
+            return
+        spoken = "Here's the plan. " + " ".join(f"{s.rstrip('.')}." for s in steps)
+        generation = self.brain.generation
+        self.hud.speaking(True)
+        try:
+            desktop.speak(spoken)  # returns once finished, or when interrupted
+        finally:
+            if self.brain.generation == generation:  # not interrupted meanwhile
+                self.hud.status("Working on it", steps[0])
 
     def start(self, mode: str) -> None:
         if self.recorder.recording:

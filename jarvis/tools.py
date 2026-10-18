@@ -309,11 +309,26 @@ CONTACT_TOOLS = [
 WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search", "max_uses": 3}
 
 
+# Jarvis tells the user what it's going to do before it does anything.
+ANNOUNCE_PLAN_TOOL = {
+    "name": "announce_plan",
+    "description": (
+        "Tell the user, out loud, every step you're about to take, before taking any of them. "
+        "Call this first, before any other action, for every request that needs one: one short, "
+        "plain step per item, in order (for example 'Open YouTube', 'Search for MrBeast', "
+        "'Play his newest video'). Jarvis reads the plan out, then you carry it out without "
+        "asking again. If the plan has to change later, call it again with the new steps."
+    ),
+    "strict": True,
+    "input_schema": _schema({"steps": {"type": "array", "items": {"type": "string"}}}, ["steps"]),
+}
+
+
 def command_tools(can_see_screen: bool = True) -> list[dict]:
     """The tools Command mode offers, in Anthropic's format."""
     from . import mail
 
-    tools = list(TOOLS)
+    tools = [ANNOUNCE_PLAN_TOOL, *TOOLS]
     if mail.configured():
         tools += EMAIL_TOOLS
     if config.is_mac:

@@ -57,8 +57,10 @@ the smart home and Alexa through Home Assistant when it's connected. When a \
 task needs looking at the screen and clicking \
 (finding and playing a particular video, working through a website or app), \
 use use_screen with the whole task. Use several tools in a row when a request \
-needs it. If a request is unclear or no tool can do it, say so rather than \
-guessing."""
+needs it. Before your first action on any request, call announce_plan with all \
+the steps you'll take, so the user hears the plan before anything happens; \
+questions you can answer without tools need no plan. If a request is unclear \
+or no tool can do it, say so rather than guessing."""
 
 if config.is_windows:
     OS_NOTE = (
@@ -165,6 +167,9 @@ class Brain:
         # True while a command is being worked on (its turn isn't finished).
         self._turn_open = False
         self._lock = threading.Lock()
+        # Called with the steps when the AI announces its plan; main.py makes
+        # it read them out. Returns once the user has heard them.
+        self.announce = lambda steps: None
 
     @property
     def generation(self) -> int:
@@ -272,6 +277,11 @@ class Brain:
     def _run_command_tool(self, call: Call, generation: int | None = None) -> tuple[str, bool]:
         if call.args is None:
             return "Failed: the arguments were not valid JSON.", True
+        if call.name == "announce_plan":
+            steps = [str(s).strip() for s in call.args.get("steps") or [] if str(s).strip()]
+            self.hud.status("The plan", "\n".join(f"{n}. {s}" for n, s in enumerate(steps, 1)))
+            self.announce(steps)
+            return "The user has heard the plan. Carry it out now.", False
         if call.name == "look_at_screen":
             from . import desktop
 
@@ -322,12 +332,15 @@ class Brain:
                     continue
                 if not step.calls:
                     return step.text or EMPTY_REPLY
-                results = []
-                for call in step.calls:
+                # The plan is always told first, even when the AI asked for it
+                # alongside the first actions.
+                done = {}
+                for call in sorted(step.calls, key=lambda c: c.name != "announce_plan"):
                     if current():
-                        results.append((call, *self._run_command_tool(call, mine)))
+                        done[call.id] = self._run_command_tool(call, mine)
                     else:
-                        results.append((call, "Skipped: the user interrupted.", True))
+                        done[call.id] = ("Skipped: the user interrupted.", True)
+                results = [(call, *done[call.id]) for call in step.calls]
                 if not current():
                     return "Stopped."
                 history.extend(self._results(results))

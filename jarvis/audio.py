@@ -7,6 +7,29 @@ import numpy as np
 from .config import config
 
 
+def find_input_device(sd, wanted: str):
+    """The microphone JARVIS_INPUT_DEVICE names: its number, or part of its name.
+
+    Windows lists each microphone once per audio system, and the default one
+    (MME) cuts names to 31 characters, so "USB PnP Audio Device" appears there
+    as "Microphone (USB PnP Audio Devic". The default system's entry is used
+    when there is one, since it records at any sample rate.
+    """
+    if not wanted:
+        return None
+    if wanted.isdigit():
+        return int(wanted)
+    inputs = [(i, d) for i, d in enumerate(sd.query_devices()) if d["max_input_channels"] > 0]
+    full_names = {d["name"].lower() for _, d in inputs if wanted.lower() in d["name"].lower()}
+    if not full_names:
+        raise ValueError(f"There's no microphone called {wanted!r} (JARVIS_INPUT_DEVICE).")
+    default_system = sd.default.hostapi
+    for i, d in inputs:
+        if d["hostapi"] == default_system and any(n.startswith(d["name"].lower()) for n in full_names):
+            return i
+    return next(i for i, d in inputs if d["name"].lower() in full_names)
+
+
 class Recorder:
     """Records from the default microphone between start() and stop()."""
 
@@ -14,6 +37,7 @@ class Recorder:
         self._chunks: list[np.ndarray] = []
         self._stream = None
         self._lock = threading.Lock()
+        self._announced_device = -1  # which microphone was last logged
         # Loudness of the latest audio chunk, 0 to 1, for the notch waveform.
         self.level = 0.0
 
@@ -34,9 +58,11 @@ class Recorder:
 
     def _open(self):
         sd = self._load()
-        device = config.input_device or None
-        if device and device.isdigit():
-            device = int(device)
+        device = find_input_device(sd, config.input_device)
+        if device != self._announced_device:
+            name = sd.query_devices(device if device is not None else sd.default.device[0])["name"]
+            print(f"Using microphone: {name}", flush=True)
+            self._announced_device = device
         stream = sd.InputStream(
             samplerate=config.sample_rate,
             channels=1,

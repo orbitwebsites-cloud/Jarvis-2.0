@@ -150,3 +150,49 @@ def test_long_conversations_start_fresh(monkeypatch):
     assert len(b._command_history) == 4
     b.run_command("one more")
     assert len(b._command_history) == 2
+
+
+def test_the_plan_is_told_before_any_action(monkeypatch):
+    import json as _json
+
+    b = make_brain()
+    events = []
+    monkeypatch.setattr(brain, "run_tool", lambda name, args: events.append(("ran", name)) or "ok")
+    b.announce = lambda steps: events.append(("told", steps))
+    # The AI asks for an action and the plan in the same reply, plan second.
+    calls = [
+        NS(id="c1", type="function", function=NS(name="open_url", arguments=_json.dumps({"url": "youtube.com"}))),
+        NS(id="c2", type="function", function=NS(name="announce_plan", arguments=_json.dumps({"steps": ["Open YouTube", "Search for MrBeast"]}))),
+    ]
+    answers = [
+        NS(choices=[NS(message=NS(content="", tool_calls=calls, refusal=None))]),
+        reply("Done."),
+    ]
+    fake = NS(calls=[])
+
+    def create(**kwargs):
+        fake.calls.append(kwargs)
+        return answers.pop(0)
+
+    b.client = NS(chat=NS(completions=NS(create=create)))
+    assert b.run_command("play MrBeast") == "Done."
+    assert events == [("told", ["Open YouTube", "Search for MrBeast"]), ("ran", "open_url")]
+    # Tool results go back in the order the AI asked for them.
+    sent = [m for m in fake.calls[1]["messages"] if m.get("role") == "tool"]
+    assert [m["tool_call_id"] for m in sent] == ["c1", "c2"]
+
+
+def test_interrupting_while_the_plan_is_read_out_stops_the_task(monkeypatch):
+    import json as _json
+
+    b = make_brain()
+    ran = []
+    monkeypatch.setattr(brain, "run_tool", lambda name, args: ran.append(name) or "ok")
+    b.announce = lambda steps: b.cancel()  # the user presses the key mid-plan
+    calls = [
+        NS(id="c1", type="function", function=NS(name="announce_plan", arguments=_json.dumps({"steps": ["Delete the file"]}))),
+        NS(id="c2", type="function", function=NS(name="press_keys", arguments=_json.dumps({"keys": "delete"}))),
+    ]
+    b.client = NS(chat=NS(completions=NS(create=lambda **kwargs: NS(choices=[NS(message=NS(content="", tool_calls=calls, refusal=None))]))))
+    assert b.run_command("delete it", b.generation) == "Stopped."
+    assert ran == []
