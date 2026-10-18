@@ -201,10 +201,17 @@ class Jarvis:
         log(f"Got {seconds:.1f}s of audio (peak {peak:.3f}), transcribing...")
         if seconds >= 0.3 and peak < 0.01:
             log("The microphone gave silence. Is Jarvis allowed to use it?")
-            self.hud.error(
-                "I can't hear your microphone. Allow Jarvis under System "
-                "Settings > Privacy & Security > Microphone, then quit and reopen Jarvis."
-            )
+            if config.is_windows:
+                self.hud.error(
+                    "I can't hear your microphone. Check Settings > Privacy & security > "
+                    "Microphone (let desktop apps use it) and that the right input device "
+                    "is chosen under Settings > System > Sound."
+                )
+            else:
+                self.hud.error(
+                    "I can't hear your microphone. Allow Jarvis under System "
+                    "Settings > Privacy & Security > Microphone, then quit and reopen Jarvis."
+                )
             return
         vocabulary = str(prefs.get("vocabulary") or "")
         text = self.transcriber.transcribe(audio, vocabulary)

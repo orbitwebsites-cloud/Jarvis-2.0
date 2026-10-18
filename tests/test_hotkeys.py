@@ -51,3 +51,24 @@ def test_matcher_needs_exactly_the_right_modifiers():
     matcher.release("ALT")
     matcher.press(d)
     assert fired == ["d"]
+
+
+def test_holding_the_hotkey_fires_once_despite_key_repeat():
+    fired = []
+    mods = {"CTRL": "ctrl", "ALT": "alt"}
+    matcher = HotkeyMatcher(
+        {"<ctrl>+<alt>+j": lambda: fired.append("j")},
+        "windows",
+        lambda key: mods.get(key) if isinstance(key, str) else None,
+    )
+    j = NS(vk=0x4A, char="\n")
+
+    matcher.press("CTRL")
+    matcher.press("ALT")
+    for _ in range(30):  # Windows auto-repeat while the key is held
+        matcher.press(j)
+    assert fired == ["j"]
+
+    matcher.release(j)
+    matcher.press(j)  # a real second press still toggles
+    assert fired == ["j", "j"]

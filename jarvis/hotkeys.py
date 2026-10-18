@@ -57,20 +57,39 @@ class HotkeyMatcher:
         self.system = system
         self.modifier_of = modifier_of
         self.held: set[str] = set()
+        self.down: set = set()  # hotkey keys held since they fired
+
+    @staticmethod
+    def _identity(key):
+        """Stable id for a key across its press, auto-repeats and release."""
+        vk = getattr(key, "vk", None)
+        if vk is not None:
+            return ("vk", vk)
+        char = getattr(key, "char", None)
+        return ("char", char.lower()) if char else ("key", key)
 
     def press(self, key) -> None:
         modifier = self.modifier_of(key)
         if modifier:
             self.held.add(modifier)
             return
+        # Holding a key makes the OS repeat its press (about 30 a second on
+        # Windows). Only the first press counts, so holding the hotkey can't
+        # toggle listening on and off over and over.
+        identity = self._identity(key)
+        if identity in self.down:
+            return
         for modifiers, name, action in self.bindings:
             if self.held == modifiers and key_matches(key, name, self.system):
+                self.down.add(identity)
                 action()
 
     def release(self, key) -> None:
         modifier = self.modifier_of(key)
         if modifier:
             self.held.discard(modifier)
+            return
+        self.down.discard(self._identity(key))
 
 
 def start_listener(bindings: dict[str, Callable[[], None]], system: str):
