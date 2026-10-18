@@ -19,7 +19,7 @@
   * { box-sizing: border-box; }
   html, body {
     margin: 0; height: 100%; background: var(--bg); color: var(--text);
-    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", "Helvetica Neue", sans-serif;
     -webkit-font-smoothing: antialiased; overflow: hidden; user-select: none;
   }
   body {
@@ -147,7 +147,7 @@
       <select id="setup-provider">
         <option value="nvidia">NVIDIA (free credits)</option>
         <option value="anthropic">Claude by Anthropic (paid, most capable)</option>
-        <option value="ollama">Ollama (free, runs on this Mac)</option>
+        <option value="ollama">Ollama (free, runs on this computer)</option>
       </select>
       <p class="muted small" id="setup-help"></p>
       <div id="setup-key-row">
@@ -160,7 +160,7 @@
       </div>
       <p class="error" id="setup-error" role="alert"></p>
       <button class="btn primary" id="setup-save">Save and start Jarvis</button>
-      <p class="muted small">Your key is saved only on this Mac, in ~/.jarvis/.env.</p>
+      <p class="muted small">Your key is saved only on this computer, in the .jarvis folder in your home folder.</p>
     </div>
   </section>
 
@@ -209,7 +209,7 @@
       <div class="group">
         <div class="row" style="display:block">
           <label for="my-number">Your phone number</label>
-          <small>So Jarvis can text and call you (say "text me ..." or "call me"). On a Mac it uses your own iMessage and FaceTime.</small>
+          <small>So Jarvis can text and call you (say "text me ..." or "call me"). On a Mac it uses your own iMessage and FaceTime; on Windows it needs a Twilio number (see the README).</small>
           <input type="tel" id="my-number" autocomplete="off" placeholder="+1 555 123 4567">
         </div>
       </div>
@@ -244,7 +244,8 @@
   let state = "idle", level = 0, smoothLevel = 0, idleTimer = null;
 
   const STATUS = {
-    idle: 'Hold <b>right Option</b> and talk',
+    // Windows gets its hotkey from Python once loaded (see "init").
+    idle: /Windows/.test(navigator.userAgent) ? "Press <b>Ctrl+Alt+J</b> and talk" : 'Hold <b>right Option</b> and talk',
     listening: "Listening…",
     thinking: "Thinking…",
     working: "Working…",
@@ -258,6 +259,7 @@
   }
   // On a phone there's no key to hold: tap the orb to talk, tap again to stop.
   document.getElementById("orb").addEventListener("click", () => post({ type: "talk" }));
+  setState("idle");
 
   function addItem(kind, who, text) {
     const item = document.createElement("div");

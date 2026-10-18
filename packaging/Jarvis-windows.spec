@@ -18,7 +18,8 @@ hiddenimports = [
     "pynput.keyboard._win32", "pynput.mouse._win32",
     "pystray._win32", "webview.platforms.winforms", "webview.platforms.edgechromium",
     "pyttsx3.drivers", "pyttsx3.drivers.sapi5", "plyer.platforms.win.notification",
-    "comtypes", "win32com", "jarvis.winapp",
+    "comtypes", "win32com", "win32com.client", "pythoncom", "win32clipboard",
+    "pycaw", "pycaw.pycaw", "jarvis.winapp",
 ]
 # Packages with native libraries or data files PyInstaller can't find alone.
 for package in [

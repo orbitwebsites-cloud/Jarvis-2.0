@@ -44,13 +44,22 @@ def configured() -> bool:
     return bool(config.email_address and config.email_app_password)
 
 
+def _text(raw: bytes, charset: str | None) -> str:
+    try:
+        return raw.decode(charset or "utf-8", errors="replace")
+    except LookupError:  # a label Python doesn't know, such as "unknown-8bit"
+        return raw.decode("utf-8", errors="replace")
+
+
 def _decode(value: str | None) -> str:
     if not value:
         return ""
-    parts = email.header.decode_header(value)
+    try:
+        parts = email.header.decode_header(value)
+    except Exception:
+        return str(value)
     return "".join(
-        text.decode(charset or "utf-8", errors="replace") if isinstance(text, bytes) else text
-        for text, charset in parts
+        _text(text, charset) if isinstance(text, bytes) else text for text, charset in parts
     )
 
 
@@ -63,7 +72,7 @@ def _body(message: email.message.Message) -> str:
         payload = part.get_payload(decode=True)
         if payload is None:
             continue
-        text = payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+        text = _text(payload, part.get_content_charset())
         if part.get_content_type() == "text/plain":
             return text.strip()
         if part.get_content_type() == "text/html" and not html:

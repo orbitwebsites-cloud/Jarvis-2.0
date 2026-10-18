@@ -48,7 +48,7 @@ class _Bridge:
 
 
 class WindowsHUD(ConsoleHUD):
-    def __init__(self, info: dict | None = None):
+    def __init__(self, info: dict | None = None, quit_on_close: bool = False):
         self.info = info or {}
         self.window = None
         self.ready = False
@@ -57,6 +57,10 @@ class WindowsHUD(ConsoleHUD):
         self._level: Callable[[], float] = lambda: 0.0
         self._listening = False
         self._tray = None
+        self._quitting = False
+        self._visible = True
+        # The setup screen has no hotkeys to keep running for, so closing it quits.
+        self._quit_on_close = quit_on_close
 
     # ---- window ------------------------------------------------------------
 
@@ -88,27 +92,84 @@ class WindowsHUD(ConsoleHUD):
         )
         # Closing the window hides it; Jarvis keeps running in the tray.
         self.window.events.closing += self._on_closing
+        self.window.events.before_show += self._allow_session_end
+        self.window.events.minimized += lambda: setattr(self, "_visible", False)
+        self.window.events.restored += lambda: setattr(self, "_visible", True)
 
     def _on_closing(self):
-        if getattr(self, "_quitting", False):
+        if self._quitting or self._quit_on_close:
             return True
         self.window.hide()
+        self._visible = False
         return False
+
+    def _allow_session_end(self):
+        """Lets Windows close Jarvis when shutting down, restarting or signing out.
+
+        Only the person closing the window is turned into "hide"; without this,
+        Windows would report that Jarvis is stopping it from shutting down.
+        """
+        try:
+            from System.Windows.Forms import CloseReason
+
+            def closing(sender, args):
+                if args.CloseReason != CloseReason.UserClosing:
+                    self._quitting = True
+                    args.Cancel = False
+
+            self.window.native.FormClosing += closing
+        except Exception as error:
+            print(f"Couldn't watch for Windows shutting down: {error}", flush=True)
 
     def show(self) -> None:
         if self.window is not None:
             self.window.show()
             self.window.restore()
+            self._visible = True
+
+    def _remove_tray_icon(self) -> None:
+        if self._tray is not None:
+            try:
+                self._tray.visible = False  # takes the icon out straight away
+                self._tray.stop()
+            except Exception:
+                pass
 
     def quit(self) -> None:
         self._quitting = True
         voice.stop()
-        if self._tray is not None:
-            self._tray.stop()
+        self._remove_tray_icon()
         try:
             self.window.destroy()
         finally:
             os._exit(0)
+
+    def _notify(self, title: str, text: str) -> None:
+        """A Windows notification from the tray icon, when the window isn't in view."""
+        if self._visible or self._tray is None:
+            return
+        try:
+            self._tray.notify(text[:250], title)
+        except Exception:
+            pass
+
+    def _watch_for_second_launch(self) -> None:
+        """Opening Jarvis again (from Start or the desktop) shows this window."""
+        import ctypes
+        from ctypes import wintypes
+
+        from .main import instance_name
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateEventW.restype = wintypes.HANDLE
+        kernel32.CreateEventW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        event = kernel32.CreateEventW(None, False, False, instance_name("JarvisShow"))
+        if not event:
+            return
+        while True:
+            if kernel32.WaitForSingleObject(event, 0xFFFFFFFF) == 0:
+                self.show()
 
     def _start_tray(self) -> None:
         try:
@@ -168,6 +229,7 @@ class WindowsHUD(ConsoleHUD):
                 self.send({"type": "setup_error", "text": str(error)})
                 return
             self.send({"type": "setup_done"})
+            self._remove_tray_icon()
             setup.relaunch()
         elif kind == "set":
             prefs.set(message["key"], message["value"])
@@ -185,10 +247,17 @@ class WindowsHUD(ConsoleHUD):
     def run(self, main: Callable[[], None]) -> None:
         import webview
 
+        from .config import config
+
         self._create_window()
         self._start_tray()
         threading.Thread(target=self._pump_levels, daemon=True).start()
-        webview.start()  # blocks on the main thread until quit
+        threading.Thread(target=self._watch_for_second_launch, daemon=True).start()
+        # One browser profile in Jarvis's folder, instead of a new temporary
+        # one (tens of MB) left behind in %TEMP% every time Jarvis runs.
+        storage = config.data_dir / "webview"
+        storage.mkdir(parents=True, exist_ok=True)
+        webview.start(private_mode=False, storage_path=str(storage))  # blocks until quit
         self.quit()
 
     def _pump_levels(self) -> None:
@@ -215,7 +284,7 @@ class WindowsHUD(ConsoleHUD):
     def reply(self, text: str, heard: str = "") -> None:
         self.send({"type": "reply", "text": text})
         self.send({"type": "state", "state": "idle"})
-        super().reply(text, heard)
+        self._notify("Jarvis", text)
 
     def flash(self, text: str) -> None:
         self._listening = False
@@ -226,7 +295,8 @@ class WindowsHUD(ConsoleHUD):
         self._listening = False
         self.send({"type": "error", "text": text})
         self.send({"type": "state", "state": "idle"})
-        super().error(text)
+        print(f"[Jarvis hit a problem] {text}", flush=True)
+        self._notify("Jarvis hit a problem", text)
 
     def status(self, title: str, body: str) -> None:
         self.send({"type": "state", "state": "working"})
@@ -238,5 +308,26 @@ class WindowsHUD(ConsoleHUD):
 
 def run_setup_window(problem: str) -> None:
     """Shows the setup screen in the Jarvis window until the person saves."""
-    hud = WindowsHUD({"provider": "", "model": "", "vision_model": "", "setup": problem})
+    hud = WindowsHUD({"provider": "", "model": "", "vision_model": "", "setup": problem}, quit_on_close=True)
     hud.run(lambda: None)
+
+
+def show_running_copy() -> bool:
+    """Asks the Jarvis that's already running to show its window."""
+    import ctypes
+    from ctypes import wintypes
+
+    from .main import instance_name
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenEventW.restype = wintypes.HANDLE
+    kernel32.OpenEventW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.SetEvent.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    event = kernel32.OpenEventW(0x0002, False, instance_name("JarvisShow"))  # EVENT_MODIFY_STATE
+    if not event:
+        return False
+    try:
+        return bool(kernel32.SetEvent(event))
+    finally:
+        kernel32.CloseHandle(event)

@@ -17,18 +17,33 @@ This is plain pattern matching, so it costs nothing and adds no delay.
 
 import re
 
+# "Jarvis, ...", "Hey, Jarvis, ..." (Whisper adds the commas).
+PREFIX = r"^(?:(?:(?:hey|ok|okay)[,!.]?\s+)?jarvis[,!.]?\s+)?"
+
 DICTATE = re.compile(
-    r"^(?:(?:hey |ok |okay )?jarvis[, ]+)?(?:please )?"
-    r"(?:type out|write down|write out|type|write|dictate)(?: this| that)?[:,]?\s+"
+    PREFIX + r"(?:please,?\s+)?"
+    r"(?:(?:type out|write down|write out|type|dictate)(?: this| that)?[:,]?\s+"
     # "write an email to Sam" is a request, not words to type.
     r"(?!(?:an? |the |me an? )?(?:e-?mail|message|note|reply|text)\b)"
+    # Plain "write" + "a poem", "me a cover letter", "the summary": something
+    # to compose, not words to type. ("type ..." is always typed as said.)
+    r"|write(?: this| that)?[:,]?\s+(?!(?:me |us |them |him |her )?(?:an?|the|some|my|another|up)\b))"
     r"(?P<text>.+)$",
     re.IGNORECASE | re.DOTALL,
 )
 
+# Ways to change how text reads. "Make it louder" or "make this full screen"
+# are commands, not edits.
+TEXT_QUALITIES = (
+    r"more|less|a (?:bit|little)|sound|shorter|longer|clearer|simpler|easier|formal|informal"
+    r"|casual|friendl(?:y|ier)|polite[r]?|nicer|better|professional|concise|funn(?:y|ier)"
+    r"|warmer|stronger|softer|kinder|punchier|tighter|smoother|plain|bold(?:er)?|grammatical"
+    r"|correct|rhyme|flow|into|a list|bullet|title case|lower ?case|upper ?case|all caps"
+)
+
 EDIT = re.compile(
-    r"^(?:(?:hey |ok |okay )?jarvis[, ]+)?(?:please |can you |could you )?"
-    r"(?:make (?:this|it|that|the selection)\b"
+    PREFIX + r"(?:please |can you |could you )?"
+    rf"(?:make (?:this|it|that|the selection) (?:{TEXT_QUALITIES})\b"
     r"|rewrite|rephrase|reword|paraphrase|proofread|polish"
     r"|fix (?:the |this |my )?(?:grammar|spelling|typos|punctuation|wording)"
     r"|fix (?:this|it|that)\b"
@@ -42,7 +57,7 @@ EDIT = re.compile(
 # Sentences that start like an instruction are commands, even if they
 # mention the screen ("use my screen to play...", "close this tab").
 COMMAND_START = re.compile(
-    r"^(?:(?:hey |ok |okay )?jarvis[, ]+)?(?:please |can you |could you )?"
+    PREFIX + r"(?:please |can you |could you )?"
     r"(?:open|play|click|go|search|close|turn|set|send|reply|scroll|find|watch|launch|"
     r"start|pause|skip|mute|unmute|volume|new|take|remember|draft|email|use|show|put|"
     r"make|switch|bring|move|press|save|check my|read my)\b",

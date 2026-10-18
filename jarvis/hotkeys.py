@@ -5,6 +5,9 @@ changes the character (Option+D types "∂"), so combinations with Option can
 silently never fire. Matching the key code avoids that.
 """
 
+import queue
+import threading
+import traceback
 from collections.abc import Callable
 
 # macOS virtual key codes for an ANSI (US-style) keyboard.
@@ -33,6 +36,8 @@ def parse(combo: str) -> tuple[frozenset[str], str]:
 
 def key_matches(key, name: str, system: str) -> bool:
     """Whether a pynput key event is the key called `name` ('d', 'space', ...)."""
+    if getattr(key, "name", None) == name:  # special keys: space, f9, ...
+        return True
     vk = getattr(key, "vk", None)
     if system == "mac" and name in MAC_KEY_CODES:
         return vk == MAC_KEY_CODES[name]
@@ -52,10 +57,19 @@ class HotkeyMatcher:
         bindings: dict[str, Callable[[], None]],
         system: str,
         modifier_of: Callable[[object], str | None],
+        on_escape: Callable[[], None] | None = None,
+        is_escape: Callable[[object], bool] = lambda key: False,
+        modifier_down: Callable[[str], bool] | None = None,
     ):
         self.bindings = [(*parse(combo), action) for combo, action in bindings.items()]
         self.system = system
         self.modifier_of = modifier_of
+        self.on_escape = on_escape
+        self.is_escape = is_escape
+        # Asks the OS whether a modifier is really down. Key releases that
+        # happen on the lock screen or the Ctrl+Alt+Del screen never reach
+        # Jarvis, so without this Ctrl and Alt could stay "held" afterwards.
+        self.modifier_down = modifier_down
         self.held: set[str] = set()
         self.down: set = set()  # hotkey keys held since they fired
 
@@ -68,11 +82,20 @@ class HotkeyMatcher:
         char = getattr(key, "char", None)
         return ("char", char.lower()) if char else ("key", key)
 
-    def press(self, key) -> None:
+    def press(self, key, injected: bool = False) -> None:
         modifier = self.modifier_of(key)
         if modifier:
             self.held.add(modifier)
             return
+        if self.on_escape is not None and self.is_escape(key):
+            # An Esc that software pressed (Jarvis itself, while working)
+            # isn't the user asking it to stop. The hotkey itself still works
+            # from macro tools such as Logitech G HUB or AutoHotkey.
+            if not injected:
+                self.on_escape()
+            return
+        if self.modifier_down is not None:
+            self.held = {m for m in self.held if self.modifier_down(m)}
         # Holding a key makes the OS repeat its press (about 30 a second on
         # Windows). Only the first press counts, so holding the hotkey can't
         # toggle listening on and off over and over.
@@ -84,7 +107,7 @@ class HotkeyMatcher:
                 self.down.add(identity)
                 action()
 
-    def release(self, key) -> None:
+    def release(self, key, injected: bool = False) -> None:
         modifier = self.modifier_of(key)
         if modifier:
             self.held.discard(modifier)
@@ -92,7 +115,47 @@ class HotkeyMatcher:
         self.down.discard(self._identity(key))
 
 
-def start_listener(bindings: dict[str, Callable[[], None]], system: str):
+class ActionRunner:
+    """Runs hotkey actions one at a time on a thread of their own.
+
+    The keyboard hook's own thread must stay quick: while it's busy (opening
+    the microphone can take seconds the first time) every key press on the
+    computer waits, and Windows drops hooks that keep it waiting. An action
+    that raises is reported instead of stopping the listener for good.
+    """
+
+    def __init__(self):
+        self._queue: queue.Queue = queue.Queue()
+        threading.Thread(target=self._run, name="jarvis-hotkeys", daemon=True).start()
+
+    def wrap(self, action: Callable[[], None]) -> Callable[[], None]:
+        return lambda: self._queue.put(action)
+
+    def _run(self) -> None:
+        while True:
+            action = self._queue.get()
+            try:
+                action()
+            except Exception:
+                print("A hotkey action failed:", flush=True)
+                traceback.print_exc()
+
+
+def _windows_modifier_down() -> Callable[[str], bool]:
+    import ctypes
+
+    user32 = ctypes.WinDLL("user32")
+    user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+    user32.GetAsyncKeyState.restype = ctypes.c_short
+    codes = {"ctrl": (0x11,), "alt": (0x12,), "shift": (0x10,), "cmd": (0x5B, 0x5C)}
+    return lambda name: any(user32.GetAsyncKeyState(code) & 0x8000 for code in codes.get(name, ()))
+
+
+def start_listener(
+    bindings: dict[str, Callable[[], None]],
+    system: str,
+    on_escape: Callable[[], None] | None = None,
+):
     """Starts listening in the background and returns the pynput listener."""
     from pynput import keyboard
 
@@ -116,7 +179,15 @@ def start_listener(bindings: dict[str, Callable[[], None]], system: str):
         except TypeError:  # unhashable key objects on some platforms
             return None
 
-    matcher = HotkeyMatcher(bindings, system, modifier_of)
+    runner = ActionRunner()
+    matcher = HotkeyMatcher(
+        {combo: runner.wrap(action) for combo, action in bindings.items()},
+        system,
+        modifier_of,
+        on_escape=runner.wrap(on_escape) if on_escape else None,
+        is_escape=lambda key: key == Key.esc,
+        modifier_down=_windows_modifier_down() if system == "windows" else None,
+    )
     listener = keyboard.Listener(on_press=matcher.press, on_release=matcher.release)
     listener.start()
     return listener

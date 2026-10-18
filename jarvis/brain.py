@@ -60,6 +60,17 @@ use use_screen with the whole task. Use several tools in a row when a request \
 needs it. If a request is unclear or no tool can do it, say so rather than \
 guessing."""
 
+if config.is_windows:
+    OS_NOTE = (
+        " The computer runs Windows, so use Windows shortcuts (ctrl, alt, win): "
+        "alt+tab switches apps, alt+left goes back in a browser, ctrl+tab changes tab."
+    )
+elif config.is_mac:
+    OS_NOTE = " The computer is a Mac, so use Mac shortcuts (cmd, option, ctrl)."
+else:
+    OS_NOTE = " The computer runs Linux."
+COMMAND_SYSTEM += OS_NOTE
+
 WEB_SEARCH_HINT = " Search the web when a question needs current information."
 
 SCREEN_SYSTEM = """\
@@ -82,7 +93,7 @@ stop before confirming it and call done saying what it would buy and the \
 total. If what they want is ambiguous, or you'd need a password you don't \
 have, call done and say why. When \
 the task is finished, or you're stuck after a few tries, call done with a \
-one-sentence summary."""
+one-sentence summary.""" + OS_NOTE.replace("{", "{{").replace("}", "}}")
 
 GRID_HINT = (
     "A faint magenta grid is drawn every 100 pixels with its coordinates "
@@ -92,8 +103,12 @@ GRID_HINT = (
 REFUSAL_REPLY = "Sorry, I can't help with that one."
 EMPTY_REPLY = "I didn't get an answer back from the AI. Try again, or try a different model."
 
-# Command-mode conversations are forgotten after this much idle time.
+# Command-mode conversations are forgotten after this much idle time...
 COMMAND_MEMORY_SECONDS = 15 * 60
+# ...or once they reach this many messages, so they can't grow (and cost
+# more on every request) forever. A fresh start is always a valid
+# conversation; trimming the old turns instead would not be.
+COMMAND_MEMORY_MESSAGES = 40
 
 # A model that keeps calling tools without finishing gets stopped here.
 MAX_TOOL_ROUNDS = 10
@@ -147,18 +162,31 @@ class Brain:
         # Bumped by cancel(); work started under an older number stops.
         self._generation = 0
         self._turn_start = 0
+        # True while a command is being worked on (its turn isn't finished).
+        self._turn_open = False
+        self._lock = threading.Lock()
+
+    @property
+    def generation(self) -> int:
+        """Pass this to run_command() so it stops if cancel() is called."""
+        return self._generation
 
     def cancel(self) -> None:
         """Abandons whatever is in progress, e.g. when the user interrupts.
 
         A request that's waiting on the AI can't be pulled back, so its
-        thread is left to finish on its own; it works on a conversation list
-        that's no longer used, and any screen control stops at its next step.
+        thread is left to finish on its own: it checks the generation number
+        after every step and stops without touching anything else, and any
+        screen control stops at its next step.
         """
-        self._generation += 1
-        self.stop_event.set()
-        # Keep the finished turns; drop the one that was cut off.
-        self._command_history = list(self._command_history[: self._turn_start])
+        with self._lock:
+            self._generation += 1
+            self.stop_event.set()
+            if self._turn_open:
+                # Keep the finished turns; drop the one that was cut off.
+                # (Interrupting the spoken reply leaves the finished turn alone.)
+                self._command_history = list(self._command_history[: self._turn_start])
+                self._turn_open = False
 
     def attach(self, hud) -> None:
         self.hud = hud
@@ -188,10 +216,14 @@ class Brain:
     def _start_command(self, command: str) -> list:
         """Returns the command history with the new command added."""
         now = time.monotonic()
-        if now - self._last_command_at > COMMAND_MEMORY_SECONDS:
+        if (
+            now - self._last_command_at > COMMAND_MEMORY_SECONDS
+            or len(self._command_history) >= COMMAND_MEMORY_MESSAGES
+        ):
             self._command_history = []
         self._last_command_at = now
         self._turn_start = len(self._command_history)
+        self._turn_open = True
         stamp = datetime.now().strftime("%A %d %B %Y, %H:%M")
         self._command_history.extend(self._user(f"[{stamp}] {command}"))
         return self._command_history
@@ -211,7 +243,12 @@ class Brain:
 
     def clean_dictation(self, transcript: str, app: str = "", vocabulary: str = "") -> str:
         system = DICTATE_SYSTEM + self._context(app, vocabulary)
-        step = self._step(system, self._user(transcript), [], self.model, "low")
+        try:
+            step = self._step(system, self._user(transcript), [], self.model, "low")
+        except Exception as error:
+            # Offline or busy: type what Whisper heard rather than lose it.
+            print(f"Couldn't tidy the dictation ({error}); typing it as heard.", flush=True)
+            return transcript
         if step.refused:
             return transcript
         return step.text or transcript
@@ -232,7 +269,7 @@ class Brain:
             return REFUSAL_REPLY
         return step.text or EMPTY_REPLY
 
-    def _run_command_tool(self, call: Call) -> tuple[str, bool]:
+    def _run_command_tool(self, call: Call, generation: int | None = None) -> tuple[str, bool]:
         if call.args is None:
             return "Failed: the arguments were not valid JSON.", True
         if call.name == "look_at_screen":
@@ -245,35 +282,74 @@ class Brain:
                 return f"Failed: {error}", True
         if call.name == "use_screen":
             try:
-                return self.operate(call.args["task"]), False
+                return self.operate(call.args["task"], generation), False
             except Exception as error:
                 return f"Failed: {error}", True
         return _run_tool_safely(call.name, call.args)
 
-    def run_command(self, command: str) -> str:
-        history = self._start_command(command)
+    def run_command(self, command: str, generation: int | None = None) -> str:
+        """Carries out a spoken command. With `generation` (from .generation,
+        read when the request was made) it stops as soon as cancel() is called,
+        before running any more tools."""
+        with self._lock:
+            mine = self._generation if generation is None else generation
+            if self._generation != mine:
+                return "Stopped."
+            history = self._start_command(command)
+            start = self._turn_start
         tools = self._command_tools()
 
-        for _ in range(MAX_TOOL_ROUNDS):
-            step = self._step(self._command_system(), history, tools, self.model, "medium")
-            history.append(step.assistant)
-            if step.paused:
-                continue
-            if step.refused:
-                return REFUSAL_REPLY
-            if not step.calls:
-                return step.text or EMPTY_REPLY
-            results = [(call, *self._run_command_tool(call)) for call in step.calls]
-            history.extend(self._results(results))
+        def current() -> bool:
+            return self._generation == mine
 
-        return "That took too many steps, so I stopped."
+        def drop_turn() -> None:
+            # Forget this command entirely: a refusal's reply is empty or
+            # half-finished, and keeping it would make every later request fail.
+            with self._lock:
+                if current():
+                    del history[start:]
 
-    def operate(self, task: str) -> str:
+        try:
+            for _ in range(MAX_TOOL_ROUNDS):
+                step = self._step(self._command_system(), history, tools, self.model, "medium")
+                if not current():
+                    return "Stopped."
+                if step.refused:
+                    drop_turn()
+                    return REFUSAL_REPLY
+                history.append(step.assistant)
+                if step.paused:
+                    continue
+                if not step.calls:
+                    return step.text or EMPTY_REPLY
+                results = []
+                for call in step.calls:
+                    if current():
+                        results.append((call, *self._run_command_tool(call, mine)))
+                    else:
+                        results.append((call, "Skipped: the user interrupted.", True))
+                if not current():
+                    return "Stopped."
+                history.extend(self._results(results))
+            return "That took too many steps, so I stopped."
+        except Exception:
+            drop_turn()
+            raise
+        finally:
+            with self._lock:
+                if current():
+                    self._turn_open = False
+                    self._last_command_at = time.monotonic()  # idle time counts from here
+
+    def operate(self, task: str, generation: int | None = None) -> str:
         """Screen control: look, act, look again, until the task is done."""
         from . import screen
 
-        self.stop_event.clear()
-        mine = self._generation
+        with self._lock:
+            mine = self._generation if generation is None else generation
+            if self._generation != mine:  # interrupted before it began
+                return "Stopped."
+            self.stop_event.clear()
 
         def stopped() -> bool:
             return self.stop_event.is_set() or self._generation != mine
@@ -354,6 +430,7 @@ class AnthropicBrain(Brain):
             max_tokens=16000,
             betas=[self.FALLBACK_BETA],
             fallbacks="default",
+            cache_control={"type": "ephemeral"},
             **kwargs,
         )
 
@@ -561,6 +638,8 @@ class OpenAICompatibleBrain(Brain):
 
 
 def make_brain() -> Brain:
+    if settings.PROVIDER_PROBLEM:
+        raise SystemExit(settings.PROVIDER_PROBLEM)
     if config.provider == "anthropic":
         return AnthropicBrain()
     return OpenAICompatibleBrain()

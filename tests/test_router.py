@@ -48,3 +48,19 @@ def test_edit_requests(said):
 
 def test_write_down_keeps_all_the_words():
     assert route("Write down milk, eggs and bread.") == ("dictate", "milk, eggs and bread.")
+
+
+@pytest.mark.parametrize(
+    "said, mode",
+    [
+        ("Hey, Jarvis, type see you at six.", "dictate"),
+        ("Write a poem about the ocean.", "command"),
+        ("Write me a cover letter for this job.", "command"),
+        ("Make it louder.", "command"),
+        ("Make this full screen.", "command"),
+        ("Make this more formal.", "edit"),
+        ("Make it shorter.", "edit"),
+    ],
+)
+def test_requests_that_used_to_be_misrouted(said, mode):
+    assert route(said)[0] == mode

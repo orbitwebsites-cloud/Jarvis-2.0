@@ -9,7 +9,14 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from . import desktop
+from .config import config
 from .tools import run_tool
+
+# Browser shortcuts differ between a Mac and Windows/Linux.
+if config.is_mac:
+    BACK, FORWARD, NEXT_TAB, PREVIOUS_TAB = "cmd+[", "cmd+]", "cmd+shift+]", "cmd+shift+["
+else:
+    BACK, FORWARD, NEXT_TAB, PREVIOUS_TAB = "alt+left", "alt+right", "ctrl+tab", "ctrl+shift+tab"
 
 # Names people say -> the web address they mean. Anything else is treated as
 # an app, unless it looks like a web address already ("bbc.co.uk").
@@ -53,7 +60,8 @@ class Quick:
 
 def normalise(text: str) -> str:
     text = text.lower().replace("\u2019", "'").strip()
-    text = re.sub(r"[.,!?;:\"]", " ", text)
+    # Full stops go, but not the dots inside "nytimes.com" or "bbc.co.uk".
+    text = re.sub(r"[,!?;:\"]|\.(?!\w)", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     text = FILLER_START.sub("", text)
     while True:
@@ -79,11 +87,11 @@ PATTERNS: list[tuple[str, object]] = [
     (r"open (?P<x>.+?) in (?:a )?new tab", lambda m: Quick("open", {"target": m["x"], "site_only": True})),
     (r"close (?:this |the |that |my )?(?:current )?tab", lambda m: Quick("browser_key", {"keys": "cmd+w", "done": "Closed the tab."})),
     (r"(?:reopen|restore|bring back) (?:the |my |that )?(?:last |closed |last closed )?tab", lambda m: Quick("browser_key", {"keys": "cmd+shift+t", "done": "Reopened it."})),
-    (r"(?:switch to |go to )?(?:the )?next tab", lambda m: Quick("browser_key", {"keys": "cmd+shift+]", "done": "Next tab."})),
-    (r"(?:switch to |go to )?(?:the )?previous tab", lambda m: Quick("browser_key", {"keys": "cmd+shift+[", "done": "Previous tab."})),
+    (r"(?:switch to |go to )?(?:the )?next tab", lambda m: Quick("browser_key", {"keys": NEXT_TAB, "done": "Next tab."})),
+    (r"(?:switch to |go to )?(?:the )?previous tab", lambda m: Quick("browser_key", {"keys": PREVIOUS_TAB, "done": "Previous tab."})),
     (r"(?:open )?(?:a )?new window", lambda m: Quick("keys", {"keys": "cmd+n", "done": "Opened a new window."})),
-    (r"go back(?: a page)?", lambda m: Quick("browser_key", {"keys": "cmd+[", "done": "Went back."})),
-    (r"go forward(?: a page)?", lambda m: Quick("browser_key", {"keys": "cmd+]", "done": "Went forward."})),
+    (r"go back(?: a page)?", lambda m: Quick("browser_key", {"keys": BACK, "done": "Went back."})),
+    (r"go forward(?: a page)?", lambda m: Quick("browser_key", {"keys": FORWARD, "done": "Went forward."})),
     (r"(?:refresh|reload)(?: (?:the|this) page)?", lambda m: Quick("browser_key", {"keys": "cmd+r", "done": "Reloaded."})),
     (rf"search (?P<site>{SEARCH_SITES}) for (?P<q>.+)", lambda m: Quick("search", {"query": m["q"], "site": m["site"]})),
     (rf"(?:search|look up|google)(?: for)? (?P<q>.+?) on (?P<site>{SEARCH_SITES})", lambda m: Quick("search", {"query": m["q"], "site": m["site"]})),
@@ -104,7 +112,9 @@ PATTERNS: list[tuple[str, object]] = [
     (r"(?:what are|read|list|show) (?:me )?my notes", lambda m: Quick("notes")),
     (r"add (?:the (?:word|name) )?(?P<w>.+?) to (?:my |the )?(?:dictionary|vocabulary|word list)",
      lambda m: Quick("add_words", {"words": m["w"]})),
-    (r"(?:take a note|make a note|note|remember)(?: that)? (?P<t>.+)", lambda m: Quick("save_note", {"text": m["t"]})),
+    # Not "remember when we went to Paris": that's a question for the AI.
+    (r"(?:take a note|make a note|note|remember)(?: that)? (?!(?:when|what|where|who|how|why|if|whether)\b)(?P<t>.+)",
+     lambda m: Quick("save_note", {"text": m["t"]})),
 ]
 
 _COMPILED = [(re.compile(pattern), build) for pattern, build in PATTERNS]
@@ -126,8 +136,40 @@ def match(text: str) -> Quick | None:
                 # "open my email", "open the file from yesterday": not an app name.
                 if target.startswith(("my ", "a ", "an ", "this ", "that ", "the ")) and not _site(target):
                     return None
+                # "go to sleep", "go to line 50", "go to the verge": not a
+                # known site or a web address, so let the AI decide.
+                if quick.args.get("site_only") and not _site(target):
+                    return None
+            # "search my email for the invoice" is for the email tools.
+            if quick.action == "search" and quick.args["query"].startswith("my "):
+                return None
+            if quick.action == "save_note" and text.rstrip().endswith("?"):
+                return None
+            # Notes and dictionary words keep the capitals and punctuation
+            # they were said with, not the lowercased text used for matching.
+            if quick.action in ("save_note", "add_words"):
+                original = _as_said(pattern.pattern, text, "t" if quick.action == "save_note" else "w")
+                if original:
+                    quick.args["text" if quick.action == "save_note" else "words"] = original
             return quick
     return None
+
+
+def _as_said(pattern: str, text: str, group: str) -> str | None:
+    """Runs `pattern` over the original wording and returns `group` from it."""
+    said = text.replace("\u2019", "'").strip()
+    said = re.sub(
+        r"^(?:(?:hey|ok|okay|yo),?\s+)?(?:jarvis[,.]?\s*)?(?:(?:please|can you|could you|would you|will you),?\s+)*",
+        "", said, flags=re.IGNORECASE,
+    )
+    said = re.sub(r"[.!]+$", "", said).strip()
+    while True:
+        trimmed = re.sub(r",?\s+(?:please|for me|now|thanks|thank you)$", "", said, flags=re.IGNORECASE)
+        if trimmed == said:
+            break
+        said = trimmed
+    found = re.fullmatch(pattern, said, flags=re.IGNORECASE | re.DOTALL)
+    return found[group].strip(" ,") if found else None
 
 
 def run(quick: Quick) -> str:
@@ -151,8 +193,6 @@ def run(quick: Quick) -> str:
     if quick.action == "open":
         target = a["target"].strip()
         site = _site(target)
-        if site is None and a.get("site_only"):
-            site = re.sub(r"\s+", "", target) + ".com"
         if site:
             desktop.open_url(site)
             return f"Opening {target}."
@@ -171,9 +211,11 @@ def run(quick: Quick) -> str:
         level = desktop.set_volume(level=a.get("level"), change=a.get("change", 0))
         return f"Volume {level}."
     if quick.action == "time":
-        return datetime.now().strftime("It's %-I:%M %p.")
+        now = datetime.now()  # %-I and %-d don't exist on Windows
+        return f"It's {now.hour % 12 or 12}:{now:%M %p}."
     if quick.action == "date":
-        return datetime.now().strftime("It's %A, %B %-d.")
+        now = datetime.now()
+        return f"It's {now:%A, %B} {now.day}."
     if quick.action == "notes":
         return run_tool("list_notes", {})
     if quick.action == "add_words":

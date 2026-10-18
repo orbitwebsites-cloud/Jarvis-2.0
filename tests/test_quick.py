@@ -12,14 +12,16 @@ from jarvis.quick import Quick, match
         ("new tab", "new_tab", {}),
         ("Close this tab.", "browser_key", {"keys": "cmd+w"}),
         ("Reopen the last closed tab", "browser_key", {"keys": "cmd+shift+t"}),
-        ("Go back.", "browser_key", {"keys": "cmd+["}),
+        ("Go back.", "browser_key", {"keys": quick.BACK}),
+        ("Next tab", "browser_key", {"keys": quick.NEXT_TAB}),
         ("Refresh the page", "browser_key", {"keys": "cmd+r"}),
         ("Search for best pizza near me", "search", {"query": "best pizza near me", "site": "google"}),
         ("Search YouTube for lofi beats", "search", {"query": "lofi beats", "site": "youtube"}),
         ("Play Bohemian Rhapsody on YouTube.", "search", {"query": "bohemian rhapsody", "site": "youtube"}),
         ("Open YouTube", "open", {"target": "youtube"}),
         ("Open Spotify.", "open", {"target": "spotify"}),
-        ("Go to bbc.co.uk", "open", {"target": "bbc co uk"}),
+        ("Go to bbc.co.uk", "open", {"target": "bbc.co.uk"}),
+        ("Go to nytimes.com.", "open", {"target": "nytimes.com"}),
         ("Pause the music", "media", {"action": "play_pause"}),
         ("Skip this song", "media", {"action": "next"}),
         ("Volume up", "volume", {"change": 10}),
@@ -28,6 +30,8 @@ from jarvis.quick import Quick, match
         ("What time is it?", "time", {}),
         ("What’s the date today?", "date", {}),
         ("Remember that my locker code is 4512", "save_note", {"text": "my locker code is 4512"}),
+        ("Remember that Bob's email is Bob.Smith@example.com.", "save_note", {"text": "Bob's email is Bob.Smith@example.com"}),
+        ("Add GitHub, OpenAI and PyTorch to my dictionary.", "add_words", {"words": "GitHub, OpenAI and PyTorch"}),
     ],
 )
 def test_matches(said, action, args):
@@ -46,6 +50,10 @@ def test_matches(said, action, args):
         "Write an email to my teacher saying I'm sick",
         "Stop",
         "How tall is Mount Everest?",
+        "Go to sleep",  # not a website
+        "Go to line 50",
+        "Search my email for the invoice from Bob",
+        "Remember when we went to Paris?",
     ],
 )
 def test_harder_requests_go_to_the_ai(said):
@@ -59,8 +67,13 @@ def test_open_prefers_websites_then_apps(monkeypatch):
 
     quick.run(Quick("open", {"target": "youtube"}))
     quick.run(Quick("open", {"target": "spotify"}))
-    quick.run(Quick("open", {"target": "nytimes", "site_only": True}))
+    quick.run(Quick("open", {"target": "nytimes.com", "site_only": True}))
     assert opened == [("url", "youtube.com"), ("app", "spotify"), ("url", "nytimes.com")]
+
+
+def test_time_and_date_work_on_every_platform():
+    assert quick.run(Quick("time")).startswith("It's ")
+    assert quick.run(Quick("date")).startswith("It's ")
 
 
 def test_missing_app_is_reported(monkeypatch):

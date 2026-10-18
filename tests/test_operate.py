@@ -91,7 +91,7 @@ def test_escape_stops_between_steps(setup):
 
 def test_command_mode_hands_screen_tasks_to_operate(setup, monkeypatch):
     b, _, _ = setup
-    monkeypatch.setattr(b, "operate", lambda task: f"did: {task}")
+    monkeypatch.setattr(b, "operate", lambda task, generation=None: f"did: {task}")
     fake = FakeCompletions(
         [
             tool_reply("", ("use_screen", {"task": "play the latest MrBeast video"})),

@@ -223,7 +223,7 @@ The first time you use a hotkey, Whisper downloads its speech model (about 150 M
 
 ### Windows app
 
-On Windows, Jarvis opens the same window as the Mac app (the orb, a feed of what it heard and did, and settings) and puts an icon in the system tray. Closing the window keeps Jarvis running; right-click the tray icon to quit. It needs `pywebview` and `pystray` (`pip install pywebview pystray`) and the Edge WebView2 runtime, which Windows 10 and 11 already have.
+On Windows, Jarvis opens the same window as the Mac app (the orb, a feed of what it heard and did, and settings) and puts an icon in the system tray. Closing the window keeps Jarvis running (replies then pop up as Windows notifications); opening Jarvis again from Start brings the window back, and right-click the tray icon to quit. Esc stops Jarvis while it's working, volume commands work, and settings offer the Windows voices. If Jarvis hears the wrong microphone, set `JARVIS_INPUT_DEVICE` to part of the right one's name. The Windows requirements (`pywebview`, `pystray`, `pycaw`, `pywin32`) install with `requirements.txt`; the Edge WebView2 runtime is already part of Windows 10 and 11.
 
 To build `Jarvis.exe`:
 

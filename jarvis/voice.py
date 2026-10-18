@@ -13,10 +13,13 @@ installed. Long replies are spoken sentence by sentence, with the next one
 prepared while the current one plays, so speech starts quickly.
 """
 
+import math
 import queue
 import re
 import subprocess
+import sys
 import threading
+import time
 import urllib.request
 
 from . import prefs
@@ -39,12 +42,14 @@ def stop() -> None:
     """Cuts off whatever Jarvis is saying, straight away. Any thread."""
     global _generation
     _generation += 1
-    try:
-        import sounddevice as sd
-
-        sd.stop()
-    except Exception:
-        pass
+    # Only Kokoro plays through sounddevice, and it's imported by then.
+    # Importing it here would stall the hotkey for seconds on first use.
+    sd = sys.modules.get("sounddevice")
+    if sd is not None:
+        try:
+            sd.stop()
+        except Exception:
+            pass
     process = _say_process
     if process is not None and process.poll() is None:
         process.terminate()
@@ -98,6 +103,10 @@ def available_voices() -> list[dict]:
             if match:
                 name = match[1].strip()
                 voices.append({"id": name, "label": f"{name} · Mac voice"})
+    if config.is_windows:
+        for name in _sapi_call(_sapi_voice_names, timeout=10) or []:
+            short = name.removeprefix("Microsoft ").split(" - ")[0].removesuffix(" Desktop")
+            voices.append({"id": name, "label": f"{short} · Windows voice"})
     return voices
 
 
@@ -221,6 +230,9 @@ def _speak_system(text: str) -> None:
             _say_process.terminate()
         _say_process.wait()
         return
+    if config.is_windows:
+        _speak_windows(text)
+        return
     global _pyttsx3_engine
     import pyttsx3
 
@@ -228,6 +240,97 @@ def _speak_system(text: str) -> None:
         _pyttsx3_engine = pyttsx3.init()
     _pyttsx3_engine.say(text)
     _pyttsx3_engine.runAndWait()
+
+
+# ---- Windows built-in voice -------------------------------------------------
+# pyttsx3 can't be reused across threads or after stop() on Windows: the second
+# reply is cut off and the third never finishes. So Jarvis keeps one SAPI voice
+# on a thread of its own and hands it work.
+
+_sapi_jobs: queue.Queue = queue.Queue()
+_sapi_thread: threading.Thread | None = None
+_sapi_start_lock = threading.Lock()
+
+SVSF_ASYNC = 1
+SVSF_PURGE = 2
+
+
+def _sapi_worker() -> None:
+    import pythoncom
+    import win32com.client
+
+    pythoncom.CoInitialize()
+    sapi = win32com.client.Dispatch("SAPI.SpVoice")
+    while True:
+        job, result, done = _sapi_jobs.get()
+        try:
+            result.append(job(sapi))
+        except Exception as error:
+            print(f"Windows voice failed: {error}", flush=True)
+        finally:
+            done.set()
+
+
+def _sapi_submit(job) -> tuple[list, threading.Event]:
+    """Queues job(sapi_voice) on the voice thread; returns (result, done)."""
+    global _sapi_thread
+    with _sapi_start_lock:
+        if _sapi_thread is None:
+            _sapi_thread = threading.Thread(target=_sapi_worker, name="jarvis-voice", daemon=True)
+            _sapi_thread.start()
+    result: list = []
+    done = threading.Event()
+    _sapi_jobs.put((job, result, done))
+    return result, done
+
+
+def _sapi_call(job, timeout: float | None = None):
+    """Runs job(sapi_voice) on the voice thread and returns what it returns."""
+    result, done = _sapi_submit(job)
+    done.wait(timeout)
+    return result[0] if result else None
+
+
+def _sapi_voice_names(sapi) -> list[str]:
+    tokens = sapi.GetVoices()
+    return [tokens.Item(i).GetDescription() for i in range(tokens.Count)]
+
+
+def _sapi_rate(speed: float) -> int:
+    """SAPI rates run from -10 to 10, where 10 is about three times as fast."""
+    if speed <= 0:
+        return 0
+    return max(-10, min(10, round(10 * math.log(speed) / math.log(3))))
+
+
+def _speak_windows(text: str) -> None:
+    mine = _generation
+    name = prefs.get("voice", config.voice)
+    speed = float(prefs.get("voice_speed", config.voice_speed))
+
+    def say(sapi):
+        if _generation != mine:
+            return
+        if name and not KOKORO_NAME.fullmatch(name):
+            tokens = sapi.GetVoices()
+            for i in range(tokens.Count):
+                if tokens.Item(i).GetDescription() == name:
+                    sapi.Voice = tokens.Item(i)
+                    break
+        sapi.Rate = _sapi_rate(speed)
+        sapi.Speak(text, SVSF_ASYNC)
+        while not sapi.WaitUntilDone(50):
+            if _generation != mine:  # stop() was called
+                sapi.Speak("", SVSF_ASYNC | SVSF_PURGE)
+                return
+
+    # Returns once speech ends or stop() is called, even if the voice thread
+    # is stuck, so a reply can never hang Jarvis.
+    _, done = _sapi_submit(say)
+    deadline = time.monotonic() + 30 + len(text) / 5
+    while not done.wait(0.1):
+        if _generation != mine or time.monotonic() > deadline:
+            return
 
 
 def speak(text: str) -> None:

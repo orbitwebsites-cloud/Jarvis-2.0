@@ -21,7 +21,9 @@ if os.environ.get("JARVIS_ENV_FILE"):
     load_dotenv(ENV_FILE)
 else:
     ENV_FILE = REPO_ENV if REPO_ENV.exists() and not IS_APP else USER_ENV
-    load_dotenv(ENV_FILE)
+    # In the app, what its setup screen saved wins over anything left in the
+    # system's environment variables (an old ANTHROPIC_API_KEY, say).
+    load_dotenv(ENV_FILE, override=IS_APP)
     load_dotenv(USER_ENV)  # app settings fill any gaps; never override
 
 # Ready-made settings for each AI provider. Every one apart from "anthropic"
@@ -50,9 +52,40 @@ PROVIDERS = {
 }
 
 PROVIDER = os.environ.get("JARVIS_PROVIDER", "anthropic").strip().lower()
-if PROVIDER not in PROVIDERS:
-    raise SystemExit(f"JARVIS_PROVIDER={PROVIDER!r} isn't one of: {', '.join(PROVIDERS)}")
-_preset = PROVIDERS[PROVIDER]
+# Reported when Jarvis starts (by make_brain), so the app can show its setup
+# screen instead of quitting before it has a window.
+PROVIDER_PROBLEM = (
+    "" if PROVIDER in PROVIDERS
+    else f"JARVIS_PROVIDER={PROVIDER!r} isn't one of: {', '.join(PROVIDERS)}"
+)
+_preset = PROVIDERS.get(PROVIDER, {})
+
+TRUE_WORDS = {"1", "true", "yes", "on"}
+FALSE_WORDS = {"0", "false", "no", "off"}
+
+
+def _flag(name: str, default: bool) -> bool:
+    """A yes/no setting: 1, true, yes or on; 0, false, no or off."""
+    value = os.environ.get(name, "").strip().lower()
+    if value in TRUE_WORDS:
+        return True
+    if value in FALSE_WORDS:
+        return False
+    if value:
+        print(f"Ignoring {name}={value!r}: use 1 or 0.")
+    return default
+
+
+def _number(name: str, default, kind=int):
+    """A number setting; a typo falls back to the default instead of stopping Jarvis."""
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return default
+    try:
+        return kind(value)
+    except ValueError:
+        print(f"Ignoring {name}={value!r}: it isn't a number.")
+        return default
 
 
 def _setting(env_name: str, preset_key: str) -> str:
@@ -92,29 +125,32 @@ class Config:
     api_key: str = _api_key()
 
     whisper_model: str = os.environ.get("JARVIS_WHISPER_MODEL", "base.en")
-    speak_replies: bool = os.environ.get("JARVIS_SPEAK", "1") == "1"
+    speak_replies: bool = _flag("JARVIS_SPEAK", True)
     # Voice: "kokoro" (natural AI voice, runs locally), "system" (built in),
     # or "auto" (Kokoro when installed). JARVIS_VOICE names the voice, e.g.
     # bm_george for Kokoro or Daniel for macOS.
     voice_engine: str = os.environ.get("JARVIS_VOICE_ENGINE", "auto").lower()
     voice: str = os.environ.get("JARVIS_VOICE", "")
-    voice_speed: float = float(os.environ.get("JARVIS_VOICE_SPEED", "1.0"))
+    voice_speed: float = _number("JARVIS_VOICE_SPEED", 1.0, float)
+    # Which microphone to record from: part of its name, or its number.
+    # Empty means the system's default input.
+    input_device: str = os.environ.get("JARVIS_INPUT_DEVICE", "").strip()
     # Whisper already adds punctuation, so dictation can skip the AI tidy-up
     # (filler words stay in) to save a round trip to the model.
-    clean_dictation: bool = os.environ.get("JARVIS_CLEAN_DICTATION", "1") == "1"
+    clean_dictation: bool = _flag("JARVIS_CLEAN_DICTATION", True)
     # Lets Ollama models think before answering: sometimes smarter, much slower.
-    thinking: bool = os.environ.get("JARVIS_THINKING", "0") == "1"
+    thinking: bool = _flag("JARVIS_THINKING", False)
     # Smaller screenshots make Ask mode much faster on local models, which
     # spend most of their time reading the image.
-    screenshot_width: int = int(
-        os.environ.get("JARVIS_SCREENSHOT_WIDTH", "1568" if PROVIDER == "anthropic" else "1024")
+    screenshot_width: int = _number(
+        "JARVIS_SCREENSHOT_WIDTH", 1568 if PROVIDER == "anthropic" else 1024
     )
     # Screen control: how big the screenshots are, whether to draw a
     # coordinate grid on them (helps open models click accurately), and how
     # many steps a task may take.
-    screen_control_width: int = int(os.environ.get("JARVIS_SCREEN_WIDTH", "1280"))
-    screen_grid: bool = os.environ.get("JARVIS_SCREEN_GRID", "0" if PROVIDER == "anthropic" else "1") == "1"
-    max_screen_steps: int = int(os.environ.get("JARVIS_MAX_SCREEN_STEPS", "25"))
+    screen_control_width: int = _number("JARVIS_SCREEN_WIDTH", 1280)
+    screen_grid: bool = _flag("JARVIS_SCREEN_GRID", PROVIDER != "anthropic")
+    max_screen_steps: int = _number("JARVIS_MAX_SCREEN_STEPS", 25)
 
     # Email: your address and an app password (not your normal password).
     email_address: str = os.environ.get("EMAIL_ADDRESS", "")
@@ -129,7 +165,7 @@ class Config:
     calendar_name: str = os.environ.get("JARVIS_CALENDAR", "")
 
     # TVs and speakers on your Wi-Fi (Chromecast, Sonos, Roku). 0 turns it off.
-    devices: bool = os.environ.get("JARVIS_DEVICES", "1") == "1"
+    devices: bool = _flag("JARVIS_DEVICES", True)
     # Home Assistant: its address and a long-lived access token (made on your
     # profile page in Home Assistant). Also how Jarvis reaches Alexa.
     home_assistant_url: str = os.environ.get("HOME_ASSISTANT_URL", "")
@@ -146,10 +182,10 @@ class Config:
 
     # On a Mac, hold a key to talk and let go to send. Choose from fn,
     # right_cmd, right_option, right_ctrl and right_shift.
-    hold_keys: bool = platform.system() == "Darwin" and os.environ.get("JARVIS_HOLD_KEYS", "1") == "1"
+    hold_keys: bool = platform.system() == "Darwin" and _flag("JARVIS_HOLD_KEYS", True)
     # One key for everything (Jarvis works out dictate / ask / command from
     # what you say), or JARVIS_ONE_KEY=0 for a separate key per mode.
-    one_key: bool = os.environ.get("JARVIS_ONE_KEY", "1") == "1"
+    one_key: bool = _flag("JARVIS_ONE_KEY", True)
     jarvis_hold: str = os.environ.get("JARVIS_HOLD", "right_option")
     dictate_hold: str = os.environ.get("JARVIS_DICTATE_HOLD", "fn")
     ask_hold: str = os.environ.get("JARVIS_ASK_HOLD", "right_cmd")
@@ -161,8 +197,8 @@ class Config:
     ask_hotkey: str = os.environ.get("JARVIS_ASK_KEY", "<ctrl>+<alt>+a")
     command_hotkey: str = os.environ.get("JARVIS_COMMAND_KEY", "<ctrl>+<alt>+j")
 
-    # The Jarvis app window with the orb and settings (Mac only).
-    app_window: bool = os.environ.get("JARVIS_APP", "1") == "1"
+    # The Jarvis app window with the orb and settings (Mac and Windows).
+    app_window: bool = _flag("JARVIS_APP", True)
 
     data_dir: Path = DATA_DIR
     is_mac: bool = platform.system() == "Darwin"

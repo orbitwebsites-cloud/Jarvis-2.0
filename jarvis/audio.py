@@ -21,17 +21,56 @@ class Recorder:
     def recording(self) -> bool:
         return self._stream is not None
 
-    def start(self) -> None:
+    def warm_up(self) -> None:
+        """Loads the audio library in the background: the first time takes a
+        few seconds, which would otherwise cut off the start of what you say."""
+        threading.Thread(target=self._load, daemon=True).start()
+
+    @staticmethod
+    def _load():
         import sounddevice as sd
 
-        self._chunks = []
-        self._stream = sd.InputStream(
+        return sd
+
+    def _open(self):
+        sd = self._load()
+        device = config.input_device or None
+        if device and device.isdigit():
+            device = int(device)
+        stream = sd.InputStream(
             samplerate=config.sample_rate,
             channels=1,
             dtype="float32",
+            device=device,
             callback=self._on_audio,
         )
-        self._stream.start()
+        try:
+            stream.start()
+        except Exception:
+            stream.close()
+            raise
+        return stream
+
+    def start(self) -> None:
+        self._chunks = []
+        try:
+            stream = self._open()
+        except Exception:
+            # The microphone list is read once, so a mic plugged in (or a
+            # new default chosen) since then is unknown. Re-read it and retry.
+            self.refresh_devices()
+            stream = self._open()
+        # Only now is it recording, so a failed start can't leave it stuck.
+        self._stream = stream
+
+    def refresh_devices(self) -> None:
+        """Re-reads the list of microphones and which one is the default."""
+        sd = self._load()
+        try:
+            sd._terminate()
+            sd._initialize()
+        except Exception as error:
+            print(f"Couldn't re-read the microphones: {error}", flush=True)
 
     def _on_audio(self, indata, frames, time, status) -> None:
         with self._lock:
@@ -42,10 +81,13 @@ class Recorder:
     def stop(self) -> np.ndarray:
         if self._stream is None:
             return np.zeros(0, dtype=np.float32)
-        self._stream.stop()
-        self._stream.close()
-        self._stream = None
+        stream, self._stream = self._stream, None
         self.level = 0.0
+        try:
+            stream.stop()
+            stream.close()
+        except Exception as error:  # e.g. the microphone was unplugged
+            print(f"Couldn't close the microphone cleanly: {error}", flush=True)
         with self._lock:
             if not self._chunks:
                 return np.zeros(0, dtype=np.float32)
@@ -65,7 +107,11 @@ class Transcriber:
         if self._model is None:
             from faster_whisper import WhisperModel
 
-            self._model = WhisperModel(config.whisper_model, device="auto", compute_type="int8")
+            try:
+                self._model = WhisperModel(config.whisper_model, device="auto", compute_type="int8")
+            except Exception as error:  # a GPU without the libraries Whisper needs
+                print(f"Whisper couldn't use the GPU ({error}); using the CPU.", flush=True)
+                self._model = WhisperModel(config.whisper_model, device="cpu", compute_type="int8")
         return self._model
 
     def warm_up(self) -> None:

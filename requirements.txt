@@ -14,3 +14,8 @@ pychromecast>=14.0
 soco>=0.30
 pyobjc-framework-Cocoa>=11.0; sys_platform == "darwin"
 pyobjc-framework-WebKit>=11.0; sys_platform == "darwin"
+# Windows app window, tray icon, volume, clipboard and voice
+pywebview>=5.0; sys_platform == "win32"
+pystray>=0.19; sys_platform == "win32"
+pycaw>=20240210; sys_platform == "win32"
+pywin32>=306; sys_platform == "win32"

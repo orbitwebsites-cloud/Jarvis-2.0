@@ -23,7 +23,10 @@ def selftest() -> None:
         # Kokoro is an optional extra voice on Windows; the system voice works without it.
         skip = ("jarvis.notch", "jarvis.app", "jarvis.macapps", "kokoro_onnx")
         modules = [m for m in modules if m not in skip]
-        modules += ["jarvis.winapp", "webview", "pystray"]
+        modules += [
+            "jarvis.winapp", "webview", "pystray", "pycaw.pycaw", "win32clipboard",
+            "win32com.client", "pythoncom",
+        ]
     else:
         modules += ["AppKit", "WebKit", "Quartz", "PyObjCTools.AppHelper"]
     failed = []
@@ -48,12 +51,16 @@ def selftest() -> None:
 if __name__ == "__main__":
     if "--selftest" in sys.argv:
         if sys.stdout is None:  # windowed Windows build: no console to print to
-            sys.stdout = sys.stderr = open(Path.home() / ".jarvis-selftest.txt", "w")
+            sys.stdout = sys.stderr = open(
+                Path.home() / ".jarvis-selftest.txt", "w", encoding="utf-8", errors="replace"
+            )
         selftest()
         sys.exit(0)
     log_dir = Path.home() / ".jarvis"
     log_dir.mkdir(parents=True, exist_ok=True)
-    log = open(log_dir / "jarvis.log", "a", buffering=1)
+    # UTF-8, not the Windows code page: a reply with "→" or an emoji must not
+    # fail just because it's being written to the log.
+    log = open(log_dir / "jarvis.log", "a", buffering=1, encoding="utf-8", errors="replace")
     sys.stdout = sys.stderr = log
 
     from jarvis.main import main

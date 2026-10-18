@@ -77,21 +77,27 @@ class _WindowsMutex:
             self._handle = None
 
 
+def instance_name(prefix: str) -> str:
+    """A name for a Windows object shared by every Jarvis using this data folder."""
+    import hashlib
+
+    digest = hashlib.sha1(str(config.data_dir.resolve()).lower().encode()).hexdigest()[:12]
+    return f"Local\\{prefix}-{digest}"
+
+
 def _acquire_windows_mutex(wait_seconds: float) -> bool:
     """Windows has no fcntl, so a named mutex (one per data dir) marks the
     running copy. The OS closes it when the process exits."""
     global _instance_lock
     try:
         import ctypes
-        import hashlib
 
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         config.data_dir.mkdir(parents=True, exist_ok=True)
     except Exception:
         # A read-only home or similar: don't block startup.
         return True
-    digest = hashlib.sha1(str(config.data_dir.resolve()).lower().encode()).hexdigest()[:12]
-    name = f"Local\\JarvisSingleInstance-{digest}"
+    name = instance_name("JarvisSingleInstance")
     ERROR_ALREADY_EXISTS = 183
     deadline = time.monotonic() + wait_seconds
     while True:
@@ -162,7 +168,12 @@ class Jarvis:
         self.hud.thinking("")
         self._busy = True
         job = self._job
-        threading.Thread(target=self._run_job, args=(mode, audio, job), daemon=True).start()
+        # Read now: if the key is pressed again, the brain moves on to a new
+        # generation and this request stops instead of carrying on.
+        generation = self.brain.generation
+        threading.Thread(
+            target=self._run_job, args=(mode, audio, job, generation), daemon=True
+        ).start()
 
     def cancel(self, mode: str) -> None:
         """Throws the recording away, e.g. when the key was only tapped."""
@@ -183,12 +194,19 @@ class Jarvis:
             self.hud.flash("Stopped")
 
     def toggle(self, mode: str) -> None:
-        if self.recorder.recording:
-            self.stop(mode)  # a different hotkey while listening is ignored
-        else:
-            self.start(mode)
+        try:
+            if self.recorder.recording:
+                self.stop(mode)  # a different hotkey while listening is ignored
+            else:
+                self.start(mode)
+        except Exception as error:
+            # Usually the microphone: unplugged, in use, or none at all.
+            log("Couldn't start or stop listening:")
+            traceback.print_exc()
+            self.mode = None
+            self.hud.error(f"I couldn't use the microphone: {error}")
 
-    def handle(self, mode: str, audio, job: int = 0) -> None:
+    def handle(self, mode: str, audio, job: int = 0, generation: int | None = None) -> None:
         current = lambda: self._current(job)  # noqa: E731
         started = time.monotonic()
         seconds = len(audio) / config.sample_rate
@@ -201,6 +219,8 @@ class Jarvis:
         log(f"Got {seconds:.1f}s of audio (peak {peak:.3f}), transcribing...")
         if seconds >= 0.3 and peak < 0.01:
             log("The microphone gave silence. Is Jarvis allowed to use it?")
+            # Pick up a different default microphone before the next try.
+            threading.Thread(target=self.recorder.refresh_devices, daemon=True).start()
             if config.is_windows:
                 self.hud.error(
                     "I can't hear your microphone. Check Settings > Privacy & security > "
@@ -242,7 +262,7 @@ class Jarvis:
                 if not current():
                     return
                 desktop.paste_text(rewritten)  # replaces the selection
-                self.hud.flash("Rewritten · ⌘Z undoes")
+                self.hud.flash(f"Rewritten · {'⌘Z' if config.is_mac else 'Ctrl+Z'} undoes")
                 return
             log("Nothing selected, so treating it as a question about the screen.")
             mode = "ask"
@@ -269,7 +289,7 @@ class Jarvis:
                 reply = quick.run(quick_command)
             else:
                 log(f"Asking {self.brain.model}...")
-                reply = self.brain.run_command(text)
+                reply = self.brain.run_command(text, generation)
         if not current():
             log("(Dropped the reply to an interrupted request.)")
             return
@@ -288,9 +308,9 @@ class Jarvis:
         else:
             self.hud.hide(after=reply_seconds(shown))
 
-    def _run_job(self, mode: str, audio, job: int) -> None:
+    def _run_job(self, mode: str, audio, job: int, generation: int | None = None) -> None:
         try:
-            self.handle(mode, audio, job)
+            self.handle(mode, audio, job, generation)
         except Exception as error:
             if self._current(job):
                 log("Something went wrong:")
@@ -303,6 +323,8 @@ class Jarvis:
     def run(self) -> None:
         voice.warm_up()
         self.transcriber.warm_up()
+        self.recorder.warm_up()
+        desktop.warm_up()
         print(f"Jarvis is running, using {config.provider} ({self.brain.model}).")
 
         # Hold-to-talk needs the macOS event loop, which the notch panel runs.
@@ -345,22 +367,36 @@ class Jarvis:
                 config.command_hotkey: lambda: self.toggle("command"),
             }
         system = "mac" if config.is_mac else "windows" if config.is_windows else "linux"
-        listener = start_listener(hotkeys, system)
+        # Esc stops Jarvis using the screen (and whatever else it's doing).
+        listener = start_listener(hotkeys, system, on_escape=self._escape)
         if config.one_key:
             print(f"  {config.command_hotkey}  talk to Jarvis (say \"type ...\" to dictate)")
         else:
             print(f"  {config.dictate_hotkey}  dictate into any text field")
             print(f"  {config.ask_hotkey}  ask about what's on your screen")
             print(f"  {config.command_hotkey}  give a command")
-        print("Press once to start talking and again to send.")
+        print("Press once to start talking and again to send. Esc stops Jarvis.")
         print("Press Ctrl+C here to quit.")
         self.hud.run(listener.join)
 
 
 def main() -> None:
-    if not acquire_single_instance():
-        print("Jarvis is already running. Quit the other copy first (menu-bar icon > Quit).")
-        return
+    if not acquire_single_instance(wait_seconds=0):
+        # Opened again while running: bring the running copy's window up.
+        if config.is_windows:
+            from .winapp import show_running_copy
+
+            if show_running_copy():
+                print("Jarvis is already running; showed its window.")
+                return
+        # Otherwise it may be Jarvis restarting itself; give the old copy a
+        # moment to finish closing.
+        if not acquire_single_instance():
+            if config.is_windows:
+                print("Jarvis is already running. Quit it from its tray icon first.")
+            else:
+                print("Jarvis is already running. Quit the other copy first (menu-bar icon > Quit).")
+            return
     try:
         jarvis = Jarvis()
     except SystemExit as problem:

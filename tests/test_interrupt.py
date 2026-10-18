@@ -93,3 +93,60 @@ def test_voice_stop_cuts_off_the_system_voice(monkeypatch):
     voice.stop()
     talking.join(1)
     assert not talking.is_alive()
+
+
+def tool_call_reply(name, args):
+    import json as _json
+
+    call = NS(id="c1", type="function", function=NS(name=name, arguments=_json.dumps(args)))
+    return NS(choices=[NS(message=NS(content="", tool_calls=[call], refusal=None))])
+
+
+def test_an_interrupted_command_runs_no_more_tools(monkeypatch):
+    b = make_brain()
+    ran = []
+    monkeypatch.setattr(brain, "run_tool", lambda name, args: ran.append(name) or "ok")
+
+    class InterruptedWhileThinking:
+        def create(self, **kwargs):
+            b.cancel()  # the user presses the key while the AI is thinking
+            return tool_call_reply("type_text", {"text": "my address"})
+
+    b.client = NS(chat=NS(completions=InterruptedWhileThinking()))
+    generation = b.generation
+    assert b.run_command("type my address", generation) == "Stopped."
+    assert ran == []  # nothing was typed after the interrupt
+    assert b._command_history == []
+
+
+def test_interrupting_the_spoken_reply_keeps_the_finished_turn():
+    b = make_brain()
+    b.client = NS(chat=NS(completions=NS(create=lambda **kwargs: reply("Paris is 18 degrees."))))
+    assert b.run_command("weather in Paris?") == "Paris is 18 degrees."
+    finished = list(b._command_history)
+    b.cancel()  # pressed while Jarvis was reading the answer out
+    assert b._command_history == finished
+
+
+def test_a_refusal_leaves_no_trace_so_later_commands_still_work():
+    b = make_brain()
+    answers = [
+        NS(choices=[NS(message=NS(content="", tool_calls=None, refusal="no"))]),
+        reply("Sure."),
+    ]
+    b.client = NS(chat=NS(completions=NS(create=lambda **kwargs: answers.pop(0))))
+    assert b.run_command("something it declines") == brain.REFUSAL_REPLY
+    assert b._command_history == []
+    assert b.run_command("something else") == "Sure."
+    assert [m["role"] for m in b._command_history] == ["user", "assistant"]
+
+
+def test_long_conversations_start_fresh(monkeypatch):
+    b = make_brain()
+    monkeypatch.setattr(brain, "COMMAND_MEMORY_MESSAGES", 4)
+    b.client = NS(chat=NS(completions=NS(create=lambda **kwargs: reply("Done."))))
+    for _ in range(2):
+        b.run_command("again")
+    assert len(b._command_history) == 4
+    b.run_command("one more")
+    assert len(b._command_history) == 2

@@ -1,4 +1,5 @@
 import stat
+import sys
 
 import pytest
 
@@ -14,7 +15,8 @@ def test_nvidia_key_is_saved_privately_and_other_lines_kept(tmp_path):
     assert "JARVIS_PROVIDER=nvidia" in lines
     assert "NVIDIA_API_KEY=nvapi-abc" in lines
     assert not any(line.startswith("JARVIS_MODEL") for line in lines)  # back to NVIDIA's default
-    assert stat.S_IMODE(env.stat().st_mode) == 0o600
+    if sys.platform != "win32":  # Windows has no Unix permission bits; the profile folder is private already
+        assert stat.S_IMODE(env.stat().st_mode) == 0o600
 
 
 def test_ollama_needs_a_model_not_a_key(tmp_path):

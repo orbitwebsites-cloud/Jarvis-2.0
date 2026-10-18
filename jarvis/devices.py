@@ -104,16 +104,23 @@ def _find_chromecasts(timeout: float = 4.0) -> list[Device]:
         import pychromecast
     except ImportError:
         return []
-    casts, browser = pychromecast.get_chromecasts(timeout=timeout)
+    from pychromecast.discovery import discover_chromecasts
+
+    infos, browser = discover_chromecasts(timeout=timeout)
     try:
         browser.stop_discovery()
     except Exception:
         pass
     devices = []
-    for cast in casts:
-        info = getattr(cast, "cast_info", None)
-        name = getattr(info, "friendly_name", None) or getattr(cast, "name", "Chromecast")
-        devices.append(Device(name, "chromecast", cast))
+    for info in infos:
+        if not info.host:
+            continue
+        # Connect by address: stopping discovery closes the network lookup a
+        # discovered cast would otherwise need when it connects later.
+        cast = pychromecast.get_chromecast_from_host(
+            (info.host, info.port, info.uuid, info.model_name, info.friendly_name)
+        )
+        devices.append(Device(info.friendly_name or "Chromecast", "chromecast", cast))
     return devices
 
 

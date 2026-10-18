@@ -54,7 +54,11 @@ def set(key: str, value) -> None:
         values = _load()
         values[key] = value
         config.data_dir.mkdir(parents=True, exist_ok=True)
-        _path().write_text(json.dumps(values, indent=2))
+        # Written to a side file and swapped in, so a crash mid-save can't
+        # leave a broken file that resets every setting next time.
+        partial = _path().with_name("settings.json.tmp")
+        partial.write_text(json.dumps(values, indent=2), encoding="utf-8")
+        partial.replace(_path())
 
 
 def add_words(words: list[str]) -> str:

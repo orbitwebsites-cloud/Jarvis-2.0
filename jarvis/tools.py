@@ -1,6 +1,7 @@
 """Tools the AI can call in command mode, and the code that runs them."""
 
 import json
+import threading
 from datetime import datetime
 
 from . import desktop
@@ -60,8 +61,14 @@ TOOLS = [
         "name": "press_keys",
         "description": (
             "Press a keyboard shortcut in the app that's in front, written like "
-            "'cmd+t', 'cmd+shift+t' or 'enter'. Use this for things like closing a tab "
-            "(cmd+w), going back in a browser (cmd+[) or switching apps (cmd+tab)."
+            + (
+                "'cmd+t', 'cmd+shift+t' or 'enter'. Use this for things like closing a tab "
+                "(cmd+w), going back in a browser (cmd+[) or switching apps (cmd+tab)."
+                if config.is_mac
+                else "'ctrl+t', 'ctrl+shift+t', 'alt+f4', 'win+d' or 'enter'. Use this for things "
+                "like closing a tab (ctrl+w), going back in a browser (alt+left) or switching "
+                "apps (alt+tab)."
+            )
         ),
         "strict": True,
         "input_schema": _schema({"keys": {"type": "string"}}, ["keys"]),
@@ -349,11 +356,27 @@ def _notes_path():
     return config.data_dir / "notes.json"
 
 
+_notes_lock = threading.Lock()
+
+
 def _load_notes() -> list[dict]:
     path = _notes_path()
     if not path.exists():
         return []
-    return json.loads(path.read_text())
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        # A damaged file: keep it to one side and start a fresh one, rather
+        # than every note command failing from now on.
+        path.replace(path.with_name("notes.broken.json"))
+        return []
+
+
+def _save_notes(notes: list[dict]) -> None:
+    path = _notes_path()
+    partial = path.with_name("notes.json.tmp")
+    partial.write_text(json.dumps(notes, indent=2), encoding="utf-8")
+    partial.replace(path)  # all at once, so a crash can't leave half a file
 
 
 def run_tool(name: str, args: dict) -> str:
@@ -448,9 +471,10 @@ def run_tool(name: str, args: dict) -> str:
     if name == "read_clipboard":
         return desktop.read_clipboard() or "(clipboard is empty)"
     if name == "save_note":
-        notes = _load_notes()
-        notes.append({"time": datetime.now().isoformat(timespec="minutes"), "text": args["text"]})
-        _notes_path().write_text(json.dumps(notes, indent=2))
+        with _notes_lock:
+            notes = _load_notes()
+            notes.append({"time": datetime.now().isoformat(timespec="minutes"), "text": args["text"]})
+            _save_notes(notes)
         return "Saved."
     if name == "list_notes":
         notes = _load_notes()

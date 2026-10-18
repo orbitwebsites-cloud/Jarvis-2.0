@@ -101,8 +101,10 @@ def _twilio_text(number: str, message: str) -> str:
 
 def _twilio_call(number: str, reason: str) -> str:
     # Twilio reads this TwiML aloud when you pick up.
+    from xml.sax.saxutils import escape
+
     words = reason or "Hello, this is Jarvis calling."
-    twiml = f"<Response><Say>{words}</Say></Response>"
+    twiml = f"<Response><Say>{escape(words)}</Say></Response>"  # "Q&A at 3" must stay valid XML
     _twilio_request(
         "Calls.json",
         {"To": number, "From": config.twilio_from, "Twiml": twiml},

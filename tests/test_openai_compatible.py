@@ -1,4 +1,5 @@
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -85,10 +86,13 @@ def config_under(env, tmp_path):
     clean = {
         "PATH": "/usr/bin:/bin",
         "HOME": str(tmp_path),
+        "USERPROFILE": str(tmp_path),  # Windows looks up the home folder here, not HOME
         "PYTHONPATH": ROOT,
         "JARVIS_ENV_FILE": str(tmp_path / "no.env"),
         **env,
     }
+    if sys.platform == "win32" and "SYSTEMROOT" in os.environ:
+        clean["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
     out = subprocess.run(
         [sys.executable, "-c", code], env=clean, cwd=tmp_path, capture_output=True, text=True, check=True
     )
